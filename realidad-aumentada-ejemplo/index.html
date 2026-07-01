@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<!--
+  PLANTILLA WEBAR — versión para MODELOS PESADOS (ej: plato de comida a tamaño real)
+  ====================================================================================
+  Diferencias contra la plantilla simple:
+    - Usa Three.js puro (no A-Frame) para poder cargar modelos comprimidos (Draco/KTX2)
+    - Barra de progreso real mientras descarga el modelo
+    - Escala en METROS (tamaño real) en vez de un factor arbitrario
+    - Iluminación pensada para que se vean bien colores y texturas (no solo wireframe)
+
+  QUÉ CAMBIAR POR CADA OBJETO NUEVO (buscá "CAMBIAR AQUÍ"):
+    1) assets/target.mind   -> marcador compilado
+    2) assets/modelo.glb    -> tu modelo 3D (comprimido, ver INSTRUCCIONES-MODELOS-PESADOS.md)
+    3) el tamaño real en metros (MODEL_REAL_SIZE_METERS más abajo)
+-->
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no, viewport-fit=cover" />
+  <title>Experiencia AR - Plato</title>
+  <style>
+    html, body { margin: 0; height: 100%; overflow: hidden; background:#000; }
+    #container { position: fixed; inset: 0; }
+
+    #overlay {
+      position: fixed; inset: 0; background: #0a0a0a; color: #fff;
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+      font-family: -apple-system, sans-serif; z-index: 999; gap: 16px; text-align:center; padding: 24px;
+    }
+    #bar-track { width: 220px; height: 6px; background: #333; border-radius: 4px; overflow: hidden; }
+    #bar-fill { width: 0%; height: 100%; background: #fff; transition: width .15s; }
+    #pct { font-size: 14px; opacity: .7; }
+    #hint { font-size: 13px; opacity: .6; max-width: 280px; }
+  </style>
+</head>
+<body>
+  <div id="container"></div>
+
+  <div id="overlay">
+    <div id="msg">Cargando modelo 3D…</div>
+    <div id="bar-track"><div id="bar-fill"></div></div>
+    <div id="pct">0%</div>
+    <div id="hint">Una vez cargado, apuntá la cámara al marcador.</div>
+  </div>
+
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+      "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/",
+      "mindar-image-three": "https://cdn.jsdelivr.net/npm/mind-ar@1.2.5/dist/mindar-image-three.prod.js"
+    }
+  }
+  </script>
+
+  <script type="module">
+    import * as THREE from "three";
+    import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
+    import { DRACOLoader } from "three/addons/loaders/DRACOLoader.js";
+    import { KTX2Loader } from "three/addons/loaders/KTX2Loader.js";
+    import { MeshoptDecoder } from "three/addons/libs/meshopt_decoder.module.js";
+    import { MindARThree } from "mindar-image-three";
+
+    // ----------------- CAMBIAR AQUÍ -----------------
+    const TARGET_MIND = "./assets/target.mind";
+    const MODEL_GLB   = "./assets/modelo.glb";
+    const MODEL_REAL_SIZE_METERS = 0.28; // ej: plato de 28cm de diámetro -> 0.28
+    // --------------------------------------------------
+
+    const overlay = document.getElementById("overlay");
+    const barFill = document.getElementById("bar-fill");
+    const pct = document.getElementById("pct");
+    const msg = document.getElementById("msg");
+
+    const mindarThree = new MindARThree({
+      container: document.querySelector("#container"),
+      imageTargetSrc: TARGET_MIND,
+    });
+    const { renderer, scene, camera } = mindarThree;
+    renderer.outputColorSpace = THREE.SRGBColorSpace;
+    renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    renderer.toneMappingExposure = 1.1;
+
+    // Luces pensadas para que se vean bien colores y texturas de comida
+    const hemi = new THREE.HemisphereLight(0xffffff, 0x444444, 1.2);
+    scene.add(hemi);
+    const dir = new THREE.DirectionalLight(0xffffff, 1.8);
+    dir.position.set(0.5, 1, 0.5);
+    scene.add(dir);
+
+    // Loaders con soporte de compresión (modelos pesados -> livianos)
+    const dracoLoader = new DRACOLoader();
+    dracoLoader.setDecoderPath("https://www.gstatic.com/draco/versioned/decoders/1.5.6/");
+
+    const ktx2Loader = new KTX2Loader();
+    ktx2Loader.setTranscoderPath("https://unpkg.com/three@0.160.0/examples/jsm/libs/basis/");
+    ktx2Loader.detectSupport(renderer);
+
+    const gltfLoader = new GLTFLoader();
+    gltfLoader.setDRACOLoader(dracoLoader);
+    gltfLoader.setKTX2Loader(ktx2Loader);
+    gltfLoader.setMeshoptDecoder(MeshoptDecoder);
+
+    const anchor = mindarThree.addAnchor(0);
+
+    gltfLoader.load(
+      MODEL_GLB,
+      (gltf) => {
+        const model = gltf.scene;
+
+        // Normaliza el tamaño al valor real en metros, sin importar
+        // la escala con la que se exportó el modelo desde Blender/etc.
+        const box = new THREE.Box3().setFromObject(model);
+        const size = new THREE.Vector3();
+        box.getSize(size);
+        const maxDim = Math.max(size.x, size.y, size.z) || 1;
+        const scaleFactor = MODEL_REAL_SIZE_METERS / maxDim;
+        model.scale.setScalar(scaleFactor);
+
+        // Centra el modelo sobre el marcador
+        const center = new THREE.Vector3();
+        box.getCenter(center);
+        model.position.sub(center.multiplyScalar(scaleFactor));
+
+        anchor.group.add(model);
+        overlay.style.display = "none";
+        mindarThree.start();
+        renderer.setAnimationLoop(() => renderer.render(scene, camera));
+      },
+      (xhr) => {
+        if (xhr.lengthComputable) {
+          const percent = Math.round((xhr.loaded / xhr.total) * 100);
+          barFill.style.width = percent + "%";
+          pct.textContent = percent + "%";
+        }
+      },
+      (error) => {
+        msg.textContent = "No se pudo cargar el modelo 3D.";
+        console.error(error);
+      }
+    );
+  </script>
+</body>
+</html>
